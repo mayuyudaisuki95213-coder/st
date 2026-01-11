@@ -208,6 +208,23 @@ highly detailed, masterpiece, best quality
             presencePenalty: 0.0,
             frequencyPenalty: 0.0
         },
+                // ... 原有设置保持不变 ...
+        // [新增] NovelAI 配置
+        novelaiConfig: {
+            enabled: false,           // NAI 开关
+            token: '',                // API Token
+            model: 'nai-diffusion-3', // 模型
+            resolution: '832x1216',   // 分辨率 (默认竖屏)
+            steps: 28,
+            scale: 5,
+            sampler: 'k_euler',
+            smea: true,               // SMEA 开关
+            dyn: true,                // SMEA DYN 开关
+            variety: false,           // Variety (+1 seed)
+            decrisp: false,           // Decrisper
+            seed: -1                  // -1 为随机
+        },
+        // ... 原有后续设置 ...
         autoRefresh: false,  // 自动刷新开关
         autoRefreshInterval: 3000, // 刷新间隔（毫秒）
         // 生图间隔设置
@@ -278,7 +295,121 @@ highly detailed, masterpiece, best quality
             { label: "抄的奈亚", role: "assistant", content: "【Need of Draft : false】\nGenerate the final output directly.\n<think>\nThought skipped. }\nProceeding to direct output to save time.\n移除全部推测分析与思考步骤，直接进行回答延续。\n不再需要思考前置思考了。\n</thought>" }
         ]
     };
+/**
+     * 直接调用 NovelAI API 生成图片
+     */
+    async function generateNovelAI(prompt, negative) {
+        const conf = settings.novelaiConfig;
+        if (!conf.token) throw new Error("请先在设置中配置 NovelAI Token");
 
+        const [width, height] = conf.resolution.split('x').map(Number);
+        
+        // 构建请求体
+        const payload = {
+            input: prompt,
+            model: conf.model,
+            action: "generate",
+            parameters: {
+                width: width,
+                height: height,
+                scale: parseFloat(conf.scale),
+                sampler: conf.sampler,
+                steps: parseInt(conf.steps),
+                seed: conf.seed === -1 ? Math.floor(Math.random() * 4294967296) : parseInt(conf.seed),
+                n_samples: 1,
+                ucPreset: 0,
+                qualityToggle: true,
+                sm: conf.smea,
+                sm_dyn: conf.dyn,
+                decrisp: conf.decrisp,
+                negative_prompt: negative || "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
+            }
+        };
+
+        addLog('NAI', `发送请求: ${conf.model} (${width}x${height}), Steps: ${conf.steps}`);
+
+        const response = await gmFetch('https://image.novelai.net/ai/generate-image', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${conf.token}`
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try { errMsg = await response.text(); } catch (e) {}
+            throw new Error(`NAI API 错误 (${response.status}): ${errMsg}`);
+        }
+
+        // NAI 返回的是 ZIP 二进制数据，我们需要提取其中的 PNG
+        // 这里的 response.text() 在 gmFetch 中可能处理过，我们需要 Blob/ArrayBuffer
+        // 注意：原脚本的 gmFetch 实现默认返回 text/json，我们需要修改 gmFetch 或使用原生处理
+        // 为了兼容原脚本，这里假设我们需要获取 ArrayBuffer。
+        // 由于原脚本 gmFetch 封装较死，建议针对 NAI 使用原生 GM_xmlhttpRequest 或者 fetch
+        
+        return new Promise((resolve, reject) => {
+            const handleBinary = (buffer) => {
+                // 简单的 ZIP 解析：寻找 PNG 文件头 (89 50 4E 47)
+                // 这是一个 Hack 方法，避免引入 JSZip 库，因为 NAI 的 ZIP 结构很简单
+                const view = new Uint8Array(buffer);
+                let pngStart = -1;
+                
+                // 搜索 PNG 头
+                for (let i = 0; i < view.length - 100; i++) {
+                    if (view[i] === 0x89 && view[i+1] === 0x50 && view[i+2] === 0x4E && view[i+3] === 0x47) {
+                        pngStart = i;
+                        break;
+                    }
+                }
+
+                if (pngStart === -1) {
+                    reject(new Error("无法从 NAI 返回数据中解析图片"));
+                    return;
+                }
+
+                // 创建 Blob
+                const imageBlob = new Blob([view.slice(pngStart)], { type: "image/png" });
+                const blobUrl = URL.createObjectURL(imageBlob);
+                resolve(blobUrl);
+            };
+
+            if (typeof GM_xmlhttpRequest !== 'undefined') {
+                GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: 'https://image.novelai.net/ai/generate-image',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${conf.token}`
+                    },
+                    data: JSON.stringify(payload),
+                    responseType: 'arraybuffer',
+                    onload: Res => {
+                        if (Res.status >= 200 && Res.status < 300) handleBinary(Res.response);
+                        else reject(new Error(`NAI Error: ${Res.status}`));
+                    },
+                    onerror: e => reject(e)
+                });
+            } else {
+                // 回退 fetch
+                fetch('https://image.novelai.net/ai/generate-image', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${conf.token}`
+                    },
+                    body: JSON.stringify(payload)
+                })
+                .then(r => {
+                    if(!r.ok) throw new Error(r.statusText);
+                    return r.arrayBuffer();
+                })
+                .then(handleBinary)
+                .catch(reject);
+            }
+        });
+    }
     let settings = DEFAULT_SETTINGS;
     let customTemplates = {};
     let debounceTimer = null;
@@ -1899,21 +2030,65 @@ highly detailed, masterpiece, best quality
         if (state.$wrap.data('generating')) return;
         state.$wrap.data('generating', true);
 
+        // 构建提示词
         const finalPrompt = `${settings.globalPrefix ? settings.globalPrefix + ', ' : ''}${state.prompt}${settings.globalSuffix ? ', ' + settings.globalSuffix : ''}`.replace(/,\s*,/g, ',').trim();
-        const cmd = `/sd quiet=true ${settings.globalNegative ? `negative="${escapeArg(settings.globalNegative)}"` : ''} ${finalPrompt}`;
+        const globalNeg = settings.globalNegative || '';
 
         state.el.msg.text('⏳ 请求中...').addClass('show');
-        state.el.img.css('opacity', '0.5');
+        state.el.img.css('opacity', '0.5'); // 图片半透明表示加载
 
-        // 超时包装函数
-        const withTimeout = (promise, ms) => {
-            return Promise.race([
-                promise,
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error(`请求超时 (${ms / 1000}秒)`)), ms)
-                )
-            ]);
-        };
+        try {
+            let newUrls = [];
+
+            // [新增逻辑] 判断是否启用 NovelAI 模式
+            if (settings.novelaiConfig && settings.novelaiConfig.enabled) {
+                addLog('GEN', '使用 NovelAI API 生成...');
+                try {
+                    // 调用我们上面写的 NAI 函数
+                    const blobUrl = await generateNovelAI(finalPrompt, globalNeg);
+                    newUrls = [blobUrl];
+                } catch (e) {
+                    throw new Error(e.message);
+                }
+            } 
+            // [原有逻辑] 使用酒馆内置 /sd 命令
+            else {
+                addLog('GEN', '使用标准 /sd 命令生成...');
+                const cmd = `/sd quiet=true ${globalNeg ? `negative="${escapeArg(globalNeg)}"` : ''} ${finalPrompt}`;
+                
+                // 复用原有的重试/超时逻辑结构，稍微简化展示
+                const result = await triggerSlash(cmd); // 这里你可以保留原有的重试逻辑
+                newUrls = (result || '').match(/(https?:\/\/|\/|output\/)[^\n]+?\.(png|jpg|jpeg|webp|gif)/gi) || [];
+            }
+
+            // 处理结果 (通用)
+            const trimmedUrls = newUrls.map(url => url.trim());
+
+            if (trimmedUrls.length > 0) {
+                state.el.msg.text('✅ 成功');
+                const uniqueImages = [...new Set([...state.images, ...trimmedUrls])];
+                // 更新聊天数据
+                await updateChatData(state.mesId, state.blockIdx, state.prompt, uniqueImages, false, false);
+                // 刷新视图
+                setTimeout(() => {
+                    const $newWrap = $(`.mes[mesid="${state.mesId}"] .sd-ui-wrap[data-block-idx="${state.blockIdx}"]`);
+                    if ($newWrap.length) updateWrapperView($newWrap, uniqueImages, uniqueImages.length - 1);
+                }, 200);
+            } else {
+                throw new Error('未获取到图片链接');
+            }
+
+        } catch (err) {
+            console.error(err);
+            state.el.msg.text('❌ 错误');
+            if(typeof toastr !== 'undefined') toastr.error(`生图失败: ${err.message}`);
+            addLog('ERROR', `Generation failed: ${err.message}`);
+        } finally {
+            state.$wrap.data('generating', false);
+            state.el.img.css('opacity', '1');
+            setTimeout(() => state.el.msg.removeClass('show'), 2000);
+        }
+    }
 
         // 重试配置（使用用户设置）
         const MAX_RETRIES = settings.retryCount || 3;
@@ -2564,11 +2739,86 @@ highly detailed, masterpiece, best quality
                     <div class="sd-tab-btn" data-tab="chars-fixes">人物&前后缀</div>
                     <div class="sd-tab-btn" data-tab="indep-api">独立生词</div>
                     <div class="sd-tab-btn" data-tab="templates">自定义模版</div>
+                    <div class="sd-tab-btn" data-tab="novelai" style="color:#ffafc9;">NovelAI</div>
                 </div>
                 
 
                 <!-- Tab 1: 基本设置 -->
                 <div id="sd-tab-basic" class="sd-tab-content active">
+                <!-- Tab: NovelAI Settings -->
+<div id="sd-tab-novelai" class="sd-tab-content">
+    <div style="margin-bottom: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px; border-left: 3px solid #ffafc9;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="nai-enabled" ${settings.novelaiConfig.enabled ? 'checked' : ''}>
+            <span style="font-weight: bold; color: #ffafc9;">启用 NovelAI 接管生图</span>
+        </label>
+        <small style="color: #bbb; display: block; margin-top: 4px;">开启后将直接调用 NAI 服务，跳过酒馆后端的 /sd 命令。</small>
+    </div>
+
+    <div class="sd-api-row">
+        <label>Token</label>
+        <input type="password" id="nai-token" class="text_pole" placeholder="pst-..." value="${settings.novelaiConfig.token}">
+    </div>
+
+    <div class="sd-api-row">
+        <label>模型</label>
+        <select id="nai-model" class="text_pole">
+            <option value="nai-diffusion-3" ${settings.novelaiConfig.model === 'nai-diffusion-3' ? 'selected' : ''}>NAI Diffusion V3</option>
+            <option value="safe-diffusion" ${settings.novelaiConfig.model === 'safe-diffusion' ? 'selected' : ''}>NAI Diffusion Anime V2</option>
+            <option value="nai-diffusion-furry-3" ${settings.novelaiConfig.model === 'nai-diffusion-furry-3' ? 'selected' : ''}>NAI Furry V3</option>
+        </select>
+    </div>
+
+    <div class="sd-api-row">
+        <label>分辨率</label>
+        <select id="nai-res" class="text_pole">
+            <option value="832x1216" ${settings.novelaiConfig.resolution === '832x1216' ? 'selected' : ''}>Portrait (832x1216)</option>
+            <option value="1216x832" ${settings.novelaiConfig.resolution === '1216x832' ? 'selected' : ''}>Landscape (1216x832)</option>
+            <option value="1024x1024" ${settings.novelaiConfig.resolution === '1024x1024' ? 'selected' : ''}>Square (1024x1024)</option>
+            <option value="512x768" ${settings.novelaiConfig.resolution === '512x768' ? 'selected' : ''}>Small Portrait (512x768)</option>
+            <option value="768x512" ${settings.novelaiConfig.resolution === '768x512' ? 'selected' : ''}>Small Landscape (768x512)</option>
+        </select>
+    </div>
+
+    <div class="sd-api-row">
+        <label>采样器</label>
+        <select id="nai-sampler" class="text_pole">
+            <option value="k_euler" ${settings.novelaiConfig.sampler === 'k_euler' ? 'selected' : ''}>Euler</option>
+            <option value="k_euler_ancestral" ${settings.novelaiConfig.sampler === 'k_euler_ancestral' ? 'selected' : ''}>Euler Ancestral</option>
+            <option value="k_dpmpp_2m" ${settings.novelaiConfig.sampler === 'k_dpmpp_2m' ? 'selected' : ''}>DPM++ 2M</option>
+            <option value="k_dpmpp_sde" ${settings.novelaiConfig.sampler === 'k_dpmpp_sde' ? 'selected' : ''}>DPM++ SDE</option>
+            <option value="ddim_v3" ${settings.novelaiConfig.sampler === 'ddim_v3' ? 'selected' : ''}>DDIM V3</option>
+        </select>
+    </div>
+
+    <div class="sd-api-row">
+        <label>Steps</label>
+        <input type="number" id="nai-steps" class="text_pole" value="${settings.novelaiConfig.steps}" min="1" max="50">
+    </div>
+
+    <div class="sd-api-row">
+        <label>Scale (CFG)</label>
+        <input type="number" id="nai-scale" class="text_pole" value="${settings.novelaiConfig.scale}" step="0.5" min="0" max="10">
+    </div>
+    
+    <div style="display:flex; gap:10px; margin-top:10px; margin-bottom:10px;">
+        <label style="display:flex; align-items:center; gap:5px; background:rgba(0,0,0,0.2); padding:5px 10px; border-radius:5px;">
+            <input type="checkbox" id="nai-smea" ${settings.novelaiConfig.smea ? 'checked' : ''}> SMEA
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; background:rgba(0,0,0,0.2); padding:5px 10px; border-radius:5px;">
+            <input type="checkbox" id="nai-dyn" ${settings.novelaiConfig.dyn ? 'checked' : ''}> DYN
+        </label>
+        <label style="display:flex; align-items:center; gap:5px; background:rgba(0,0,0,0.2); padding:5px 10px; border-radius:5px;">
+            <input type="checkbox" id="nai-decrisp" ${settings.novelaiConfig.decrisp ? 'checked' : ''}> Decrisper
+        </label>
+    </div>
+
+    <div class="sd-api-row">
+        <label>Seed</label>
+        <input type="number" id="nai-seed" class="text_pole" placeholder="-1 (随机)" value="${settings.novelaiConfig.seed}">
+    </div>
+    <small style="color:#888;">Seed 设置为 -1 即为随机种子。</small>
+</div>
                     <h4 style="margin-top:0; margin-bottom:15px;">功能开关</h4>
                     
                     <div style="margin-bottom: 12px;">
@@ -3862,6 +4112,22 @@ highly detailed, masterpiece, best quality
 
                 // 流式生图设置
                 settings.streamingGeneration = $('#sd-streaming-gen').is(':checked');
+                // [新增] 保存 NovelAI 配置
+                if (!settings.novelaiConfig) settings.novelaiConfig = {};
+                settings.novelaiConfig.enabled = $('#nai-enabled').is(':checked');
+                settings.novelaiConfig.token = $('#nai-token').val();
+                settings.novelaiConfig.model = $('#nai-model').val();
+                settings.novelaiConfig.resolution = $('#nai-res').val();
+                settings.novelaiConfig.sampler = $('#nai-sampler').val();
+                settings.novelaiConfig.steps = parseInt($('#nai-steps').val()) || 28;
+                settings.novelaiConfig.scale = parseFloat($('#nai-scale').val()) || 5;
+                settings.novelaiConfig.seed = parseInt($('#nai-seed').val());
+                if (isNaN(settings.novelaiConfig.seed)) settings.novelaiConfig.seed = -1;
+                
+                settings.novelaiConfig.smea = $('#nai-smea').is(':checked');
+                settings.novelaiConfig.dyn = $('#nai-dyn').is(':checked');
+                settings.novelaiConfig.decrisp = $('#nai-decrisp').is(':checked');
+
 
                 // 独立API模式设置
                 settings.independentApiEnabled = $('#sd-indep-en').is(':checked');
