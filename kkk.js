@@ -4361,63 +4361,70 @@ highly detailed, masterpiece, best quality
                         .filter(Boolean)  // 移除空字符串
                         .join(', ');
 
-                    // 使用合并后的提示词，使用当前设置的所有参数，同时传递负面提示词
-                    const result = await callNovelAIForImage(combinedPrompt, {
-                        width: width || 1216,
-                        height: height || 832,
-                        scale: parseFloat($('#sd-novelai-scale').val()) || 6,
-                        steps: parseInt($('#sd-novelai-steps').val()) || 28, // 使用当前设置的步数，而非固定的10
-                        seed: parseInt($('#sd-novelai-seed').val()) || -1,
-                        sampler: $('#sd-novelai-sampler').val(),
-                        scheduler: $('#sd-novelai-scheduler').val(),
-                        qualityToggle: $('#sd-novelai-quality-toggle').is(':checked'),
-                        autoSmea: $('#sd-novelai-auto-smea').is(':checked'),
-                        cfg_rescale: 0,
-                        ucPreset: 0,
-                        sm: $('#sd-novelai-sm').is(':checked'),
-                        sm_dyn: $('#sd-novelai-sm-dyn').is(':checked'),
-                        decrisper: $('#sd-novelai-decrisper').is(':checked'),
-                        variety_boost: $('#sd-novelai-variety-boost').is(':checked')
-                    }, undefined, $('#sd-novelai-negative').val()); // 不再传递prefix，因为我们已经将其合并到提示词中
+                    try {
+                        // 使用合并后的提示词，使用当前设置的所有参数，同时传递负面提示词
+                        const result = await callNovelAIForImage(combinedPrompt, {
+                            width: width || 1216,
+                            height: height || 832,
+                            scale: parseFloat($('#sd-novelai-scale').val()) || 6,
+                            steps: parseInt($('#sd-novelai-steps').val()) || 28, // 使用当前设置的步数，而非固定的10
+                            seed: parseInt($('#sd-novelai-seed').val()) || -1,
+                            sampler: $('#sd-novelai-sampler').val(),
+                            scheduler: $('#sd-novelai-scheduler').val(),
+                            qualityToggle: $('#sd-novelai-quality-toggle').is(':checked'),
+                            autoSmea: $('#sd-novelai-auto-smea').is(':checked'),
+                            cfg_rescale: 0,
+                            ucPreset: 0,
+                            sm: $('#sd-novelai-sm').is(':checked'),
+                            sm_dyn: $('#sd-novelai-sm-dyn').is(':checked'),
+                            decrisper: $('#sd-novelai-decrisper').is(':checked'),
+                            variety_boost: $('#sd-novelai-variety-boost').is(':checked')
+                        }, undefined, $('#sd-novelai-negative').val()); // 不再传递prefix，因为我们已经将其合并到提示词中
 
-                    // 恢复原来的设置
-                    settings.novelaiApiKey = originalApiKey;
-                    settings.novelaiModel = originalModel;
-                    settings.novelaiParams = originalParams;
-                    settings.novelaiPrefix = originalPrefix;
-                    settings.novelaiNegative = originalNegative;
+                        // 恢复原来的设置
+                        settings.novelaiApiKey = originalApiKey;
+                        settings.novelaiModel = originalModel;
+                        settings.novelaiParams = originalParams;
+                        settings.novelaiPrefix = originalPrefix;
+                        settings.novelaiNegative = originalNegative;
 
-                    // 显示生成的图片
-                    $resultImg.attr('src', result);
-                    $resultDiv.show();
+                        // 检查结果是否有效
+                        if (!result || typeof result !== 'string' || !result.startsWith('data:image')) {
+                            throw new Error('API返回了无效的图片数据');
+                        }
 
-                    // 显示成功状态
-                    const $statusSpan = $('#sd-novelai-test-status');
-                    $statusSpan.text('测试成功').addClass('success-status').css({
-                        'color': 'green',
-                        'display': 'inline'
-                    });
+                        // 显示生成的图片
+                        $resultImg.attr('src', result);
+                        $resultDiv.show();
 
-                    toastr.success('✅ NovelAI 连接测试成功！图片生成成功');
-                } catch (e) {
-                    // 恢复原来的设置
-                    settings.novelaiApiKey = originalApiKey;
-                    settings.novelaiModel = originalModel;
-                    settings.novelaiParams = originalParams;
-                    settings.novelaiPrefix = originalPrefix;
-                    settings.novelaiNegative = originalNegative;
+                        // 显示成功状态
+                        const $statusSpan = $('#sd-novelai-test-status');
+                        $statusSpan.text('测试成功').addClass('success-status').css({
+                            'color': 'green',
+                            'display': 'inline'
+                        });
 
-                    // 显示失败状态
-                    const $statusSpan = $('#sd-novelai-test-status');
-                    $statusSpan.text('测试失败').addClass('error-status').css({
-                        'color': 'red',
-                        'display': 'inline'
-                    });
+                        toastr.success('✅ NovelAI 连接测试成功！图片生成成功');
+                    } catch (e) {
+                        // 恢复原来的设置
+                        settings.novelaiApiKey = originalApiKey;
+                        settings.novelaiModel = originalModel;
+                        settings.novelaiParams = originalParams;
+                        settings.novelaiPrefix = originalPrefix;
+                        settings.novelaiNegative = originalNegative;
 
-                    // 显示详细的错误信息
-                    const errorMessage = e.message || e.toString() || '未知错误';
-                    toastr.error(`❌ NovelAI 测试失败: ${errorMessage}`);
-                    console.error('NovelAI 测试失败详情:', e);
+                        // 显示失败状态
+                        const $statusSpan = $('#sd-novelai-test-status');
+                        $statusSpan.text('测试失败').addClass('error-status').css({
+                            'color': 'red',
+                            'display': 'inline'
+                        });
+
+                        // 显示详细的错误信息
+                        const errorMessage = e.message || e.toString() || '未知错误';
+                        toastr.error(`❌ NovelAI 测试失败: ${errorMessage}`);
+                        console.error('NovelAI 测试失败详情:', e);
+                    }
                 } finally {
                     $btn.prop('disabled', false).text('🧪 测试 NovelAI 连接');
                 }
